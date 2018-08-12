@@ -37,6 +37,8 @@ from bb import monitordisk
 import subprocess
 import pickle
 from multiprocessing import Process
+import psutil
+import time
 
 bblogger = logging.getLogger("BitBake")
 logger = logging.getLogger("BitBake.RunQueue")
@@ -1668,6 +1670,7 @@ class RunQueueExecute:
         self.rqdata = rq.rqdata
 
         self.number_tasks = int(self.cfgData.getVar("BB_NUMBER_THREADS") or 1)
+        self.number_tasks_low_cpu = int(self.cfgData.getVar("BB_NUMBER_THREADS_LOW_CPU") or 0)
         self.scheduler = self.cfgData.getVar("BB_SCHEDULER") or "speed"
 
         self.runq_buildable = set()
@@ -1679,6 +1682,8 @@ class RunQueueExecute:
         self.failed_tids = []
 
         self.stampcache = {}
+        self.last_cpu_percent = psutil.cpu_percent()
+        self.last_cpu_percent_time = time.monotonic()
 
         for mc in rq.worker:
             rq.worker[mc].pipe.setrunqueueexec(self)
@@ -1687,6 +1692,8 @@ class RunQueueExecute:
 
         if self.number_tasks <= 0:
              bb.fatal("Invalid BB_NUMBER_THREADS %s" % self.number_tasks)
+        if self.number_tasks_low_cpu < 0:
+             bb.fatal("Invalid BB_NUMBER_THREADS_LOW_CPU %s" % self.number_tasks_low_cpu)
 
     def runqueue_process_waitpid(self, task, status):
 
@@ -1756,6 +1763,17 @@ class RunQueueExecute:
 
     def can_start_task(self):
         can_start = self.stats.active < self.number_tasks
+        # Can we inject extra tasks for low workload?
+        if not can_start and self.number_tasks_low_cpu > 0:
+            _time = time.monotonic()
+            # avoid workload inaccuray
+            if _time - self.last_cpu_percent_time >= 0.1:
+                cpu_percent = psutil.cpu_percent()
+                self.last_cpu_percent = cpu_percent
+                self.last_cpu_percent_time = _time
+                if cpu_percent < 90 and self.stats.active < self.number_tasks_low_cpu:
+                    can_start = True
+
         return can_start
 
 class RunQueueExecuteDummy(RunQueueExecute):
